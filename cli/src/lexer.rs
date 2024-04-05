@@ -1,6 +1,6 @@
 use lib::*;
 
-struct Ident;
+pub struct Ident;
 
 impl Rule for Ident {
     fn parse(&self, state: &mut ParserState) -> Option<String> {
@@ -25,7 +25,7 @@ impl Rule for Ident {
     }
 }
 
-struct Number;
+pub struct Number;
 
 impl Rule for Number {
     fn parse(&self, state: &mut ParserState) -> Option<String> {
@@ -35,5 +35,33 @@ impl Rule for Number {
         } else {
             Some(number)
         }
+    }
+}
+
+pub struct Str;
+
+impl Rule for Str {
+    fn parse(&self, state: &mut ParserState) -> Option<String> {
+        let peek = state.peek();
+
+        if peek.is_none() {
+            return None;
+        }
+
+        let c = peek.unwrap();
+
+        if c != '"' {
+            return None;
+        }
+
+        state.consume();
+
+        let string = state.consume_while(|c| c != '"');
+
+        if state.consume() != Some('"') {
+            return None;
+        }
+
+        Some(string)
     }
 }

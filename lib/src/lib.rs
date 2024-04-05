@@ -1,9 +1,18 @@
 pub struct ParserState {
     pub input: String,
     pub pos: usize,
+    pub stack: Vec<usize>,
 }
 
 impl ParserState {
+    pub fn new(input: &str) -> Self {
+        ParserState {
+            input: input.to_string(),
+            pos: 0,
+            stack: Vec::new(),
+        }
+    }
+
     pub fn consume_while(&mut self, pred: impl Fn(char) -> bool) -> String {
         let mut res = String::new();
         while self.pos < self.input.len() {
@@ -36,6 +45,18 @@ impl ParserState {
         }
         c
     }
+
+    pub fn push(&mut self) {
+        self.stack.push(self.pos);
+    }
+
+    pub fn pop(&mut self) {
+        self.pos = self.stack.pop().unwrap();
+    }
+
+    pub fn commit(&mut self) {
+        self.stack.pop();
+    }
 }
 
 pub trait Rule {
@@ -51,7 +72,12 @@ impl Rule for Lit {
         state.ignore_whitespace();
         let pos = state.pos;
         for c in self.value.chars() {
-            if state.input.chars().nth(state.pos).unwrap() != c {
+            if let Some(nc) = state.input.chars().nth(state.pos) {
+                if c != nc {
+                    state.pos = pos;
+                    return None;
+                }
+            } else {
                 state.pos = pos;
                 return None;
             }
@@ -59,6 +85,10 @@ impl Rule for Lit {
         }
         Some(self.value.clone())
     }
+}
+
+pub fn exec<T: Rule>(rule: T, state: &mut ParserState) -> Option<String> {
+    rule.parse(state)
 }
 
 pub fn lit(value: &str) -> impl Rule {
@@ -72,8 +102,8 @@ pub fn or<T: Rule, U: Rule>(a: T, b: U) -> impl Rule {
 
     impl<T: Rule, U: Rule> Rule for Or<T, U> {
         fn parse(&self, state: &mut ParserState) -> Option<String> {
-            let pos = state.pos;
             state.ignore_whitespace();
+            let pos = state.pos;
             if let Some(res) = self.0.parse(state) {
                 state.ignore_whitespace();
                 return Some(res);
@@ -91,8 +121,8 @@ pub fn and<T: Rule, U: Rule>(a: T, b: U) -> impl Rule {
 
     impl<T: Rule, U: Rule> Rule for And<T, U> {
         fn parse(&self, state: &mut ParserState) -> Option<String> {
-            let pos = state.pos;
             state.ignore_whitespace();
+            let pos = state.pos;
             let res_a = self.0.parse(state);
             if let Some(res_a) = res_a {
                 state.ignore_whitespace();
