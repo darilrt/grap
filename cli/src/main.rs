@@ -1,10 +1,11 @@
 use crate::parser::Parser;
 
+mod ast;
 mod lexer;
 mod parser;
 
 fn main() {
-    let input = "\"Hello, \" + \"World!\"\na + b";
+    let input = "a : b = 10\n2";
 
     let mut parser = Parser::new(input);
 

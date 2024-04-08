@@ -1,102 +1,170 @@
-use crate::lexer::*;
-use lib::*;
+use std::borrow::Borrow;
 
-#[derive(Debug)]
-pub enum Ast {
-    Unknown,
-    Number(i32),
-    String(String),
-    Ident(String),
-    Add(Box<Ast>, Box<Ast>),
-    Sub(Box<Ast>, Box<Ast>),
-    Mul(Box<Ast>, Box<Ast>),
-    Div(Box<Ast>, Box<Ast>),
-    Expr(Box<Ast>),
-    Program(Vec<Ast>),
-}
+use lib::{
+    rules::*,
+    token::{Token, TokenKind},
+    tokenizer::Tokenizer,
+};
+
+use crate::ast::*;
+use crate::lexer::{Ident, Number, Str};
 
 pub struct Parser {
-    state: ParserState,
+    pub state: Tokenizer,
 }
 
 impl Parser {
     pub fn new(input: &str) -> Self {
         Parser {
-            state: ParserState::new(input),
+            state: Tokenizer::new(
+                input,
+                vec![
+                    "if", "else", "while", "for", "return", "break", "continue", "type", "fn",
+                ],
+            ),
         }
     }
 
     pub fn parse(&mut self) -> Ast {
-        let mut program = Vec::new();
+        let mut stmts = Vec::new();
+        while self.state.pos < self.state.input.len() {
+            let stmt = self.parse_stmt();
 
-        loop {
-            self.state.ignore_whitespace();
-
-            if self.state.eof() {
+            if stmt.is_none() {
                 break;
             }
 
-            program.push(self.parse_stmt());
+            stmts.push(stmt.unwrap());
+
+            if let Some(c) = self.state.input.chars().nth(self.state.pos) {
+                if c != '\n' {
+                    eprintln!("Expected newline");
+                    break;
+                }
+            }
+        }
+        Ast { stmts }
+    }
+
+    // stmt = keyword_stmt | ident_stmt
+    fn parse_stmt(&mut self) -> Option<StmtKind> {
+        let token = (Ident {}).parse(&mut self.state);
+
+        if token.is_none() {
+            return self.parse_expr_stmt();
         }
 
-        Ast::Program(program)
+        let token = token.unwrap();
+
+        match token.kind {
+            TokenKind::Keyword => self.parse_keyword_stmt(token),
+            TokenKind::Ident => self.parse_ident_stmt(token),
+            _ => Some(StmtKind::Expr(Box::new(ExprKind::Ident(token.literal)))),
+        }
     }
 
-    pub fn parse_stmt(&mut self) -> Ast {
-        self.parse_expr()
+    fn parse_keyword_stmt(&mut self, token: Token) -> Option<StmtKind> {
+        None
     }
 
-    pub fn parse_expr(&mut self) -> Ast {
-        Ast::Expr(Box::new(self.parse_add()))
+    // ident_stmt = ident, (':', decl_stmt | '::', def_stmt)
+    fn parse_ident_stmt(&mut self, token: Token) -> Option<StmtKind> {
+        if let Some(_) = lex!(":").parse(&mut self.state) {
+            return self.parse_decl_stmt(token);
+        }
+
+        if let Some(_) = lex!("::").parse(&mut self.state) {
+            return self.parse_def_stmt(token);
+        }
+
+        Some(StmtKind::Expr(Box::new(ExprKind::Ident(token.literal))))
     }
 
-    // add := mul (('+' | '-') add)
-    pub fn parse_add(&mut self) -> Ast {
-        let mut lhs = self.parse_mul();
+    // def_stmt = ident, '::', ('fn', fn_decl | 'type', type_decl)
+    fn parse_def_stmt(&mut self, token: Token) -> Option<StmtKind> {
+        let keyword = (Ident {}).parse(&mut self.state).unwrap();
 
-        if let Some(op) = exec(or(lit("+"), lit("-")), &mut self.state) {
-            let rhs = self.parse_add();
+        match keyword.literal.as_str() {
+            // "fn" => self.parse_fn_decl(token),
+            // "type" => self.parse_type_decl(token),
+            _ => None,
+        }
+    }
 
-            if op == "+" {
-                lhs = Ast::Add(Box::new(lhs), Box::new(rhs));
-            } else {
-                lhs = Ast::Sub(Box::new(lhs), Box::new(rhs));
+    // decl_stmt = ident, ':', type, ['=', expr]
+    fn parse_decl_stmt(&mut self, token: Token) -> Option<StmtKind> {
+        let type_ = (Ident {}).parse(&mut self.state).unwrap();
+
+        let expr = if let Some(_) = lex!("=").parse(&mut self.state) {
+            self.parse_expr()
+        } else {
+            None
+        };
+
+        Some(StmtKind::Decl(token, type_, Box::new(expr?)))
+    }
+
+    // expr_stmt = expr
+    fn parse_expr_stmt(&mut self) -> Option<StmtKind> {
+        let expr = self.parse_expr();
+
+        if expr.is_none() {
+            return None;
+        }
+
+        Some(StmtKind::Expr(Box::new(expr?)))
+    }
+
+    // expr = add_expr
+    fn parse_expr(&mut self) -> Option<ExprKind> {
+        self.parse_add_expr()
+    }
+
+    // add_expr = mul_expr, ('+', add_expr | '-', add_expr)
+    fn parse_add_expr(&mut self) -> Option<ExprKind> {
+        let mut lhs = self.parse_mul_expr()?;
+
+        while let Some(token) = (lex!("+" | "-")).parse(&mut self.state) {
+            let rhs = self.parse_mul_expr()?;
+            lhs = ExprKind::Binary(token, Box::new(lhs), Box::new(rhs));
+        }
+
+        Some(lhs)
+    }
+
+    // mul_expr = primary_expr, ('*', mul_expr | '/', mul_expr)
+    fn parse_mul_expr(&mut self) -> Option<ExprKind> {
+        let mut lhs = self.parse_primary_expr()?;
+
+        while let Some(token) = (lex!("*" | "/")).parse(&mut self.state) {
+            let rhs = self.parse_primary_expr()?;
+            lhs = ExprKind::Binary(token, Box::new(lhs), Box::new(rhs));
+        }
+
+        Some(lhs)
+    }
+
+    // primary_expr = number | ident | '(', expr, ')'
+    fn parse_primary_expr(&mut self) -> Option<ExprKind> {
+        if let Some(token) = (Number {}).parse(&mut self.state) {
+            return Some(ExprKind::Number(token.literal.parse().unwrap()));
+        }
+
+        if let Some(token) = (Ident {}).parse(&mut self.state) {
+            return Some(ExprKind::Ident(token.literal));
+        }
+
+        if let Some(token) = (Str {}).parse(&mut self.state) {
+            return Some(ExprKind::String(token.literal));
+        }
+
+        if let Some(_) = lex!("(").parse(&mut self.state) {
+            let expr = self.parse_expr()?;
+            if let Some(_) = lex!(")").parse(&mut self.state) {
+                return Some(expr);
             }
         }
 
-        lhs
-    }
-
-    // term := factor (('*' | '/') mul)
-    pub fn parse_mul(&mut self) -> Ast {
-        let mut lhs = self.parse_factor();
-
-        if let Some(op) = exec(or(lit("*"), lit("/")), &mut self.state) {
-            let rhs = self.parse_mul();
-
-            if op == "*" {
-                lhs = Ast::Mul(Box::new(lhs), Box::new(rhs));
-            } else {
-                lhs = Ast::Div(Box::new(lhs), Box::new(rhs));
-            }
-        }
-
-        lhs
-    }
-
-    // factor := number | ident
-    pub fn parse_factor(&mut self) -> Ast {
-        if let Some(literal) = exec(Number {}, &mut self.state) {
-            return Ast::Number(literal.parse().unwrap());
-        }
-
-        if let Some(literal) = exec(Str {}, &mut self.state) {
-            return Ast::String(literal);
-        }
-
-        if let Some(literal) = exec(Ident {}, &mut self.state) {
-            return Ast::Ident(literal);
-        }
-        Ast::Unknown
+        None
     }
 }
